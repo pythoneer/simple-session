@@ -1,7 +1,9 @@
 //! Turns what the shim and DisplayConfig report into a [`Session`].
 
 use crate::config::Config;
-use crate::model::{App, Launch, Monitor, RelRect, SCHEMA, Session, WindowMatch, WindowSlot, Workspaces};
+use crate::model::{
+    App, Launch, Monitor, Rect, RelRect, SCHEMA, Session, WindowMatch, WindowSlot, Workspaces,
+};
 use crate::shim::{ShimWindow, ShimWorkspaces};
 
 pub struct Meta {
@@ -55,6 +57,7 @@ pub fn build_session(
         };
 
         let monitor = usize::try_from(window.monitor).ok().and_then(|i| monitors.get(i));
+        let rect = geometry(window, monitor);
         apps[index].windows.push(WindowSlot {
             matcher: WindowMatch {
                 wm_class: window.wm_class.clone(),
@@ -66,8 +69,8 @@ pub fn build_session(
             monitor_key: monitor.map_or_else(|| format!("index:{}", window.monitor), |m| m.key.clone()),
             workspace: window.workspace,
             on_all_workspaces: window.on_all_workspaces,
-            rect_rel: RelRect::from_abs(window.frame, monitor.map_or(window.frame, |m| m.work_area)),
-            rect_abs: window.frame,
+            rect_rel: RelRect::from_abs(rect, monitor.map_or(rect, |m| m.work_area)),
+            rect_abs: rect,
             maximized: window.maximized,
             fullscreen: window.fullscreen,
             minimized: window.minimized,
@@ -89,6 +92,21 @@ pub fn build_session(
         monitors,
         apps,
     }
+}
+
+/// The rectangle to save: for maximized or fullscreen windows the geometry
+/// they unmaximize to, so a restored window keeps it. Only used when it lies
+/// on the window's monitor; otherwise restore would move the window there
+/// before maximizing it.
+fn geometry(window: &ShimWindow, monitor: Option<&Monitor>) -> Rect {
+    match (window.restore_frame, monitor) {
+        (Some(r), Some(m)) if contains(m.rect, r.x + r.w / 2, r.y + r.h / 2) => r,
+        _ => window.frame,
+    }
+}
+
+fn contains(area: Rect, x: i32, y: i32) -> bool {
+    x >= area.x && x < area.x + area.w && y >= area.y && y < area.y + area.h
 }
 
 pub fn proc_cmdline(pid: i32) -> Option<Vec<String>> {
@@ -125,6 +143,7 @@ mod tests {
             on_all_workspaces: workspace < 0,
             monitor,
             frame: Rect { x: 1728 + 480, y: 886 + 270, w: 960, h: 540 },
+            restore_frame: None,
             maximized: Maximized::None,
             fullscreen: false,
             minimized: false,
@@ -197,6 +216,28 @@ mod tests {
             Launch::Argv { argv: vec!["/opt/sublime_merge/sublime_merge".into()] }
         );
         assert_eq!(session.apps[1].launch, Launch::None);
+    }
+
+    #[test]
+    fn maximized_windows_save_their_restore_frame_if_on_the_same_monitor() {
+        let restore = Rect { x: 1728 + 100, y: 886 + 100, w: 800, h: 600 };
+        let mut on_monitor = window(1, Some("a.desktop"), "a", 0, 1);
+        on_monitor.maximized = Maximized::Both;
+        on_monitor.restore_frame = Some(restore);
+        let mut elsewhere = window(2, Some("b.desktop"), "b", 0, 1);
+        elsewhere.maximized = Maximized::Both;
+        elsewhere.restore_frame = Some(Rect { x: 100, y: 100, w: 800, h: 600 }); // on the left monitor
+
+        let session = build_session(
+            meta(),
+            vec![on_monitor, elsewhere],
+            monitors(),
+            &workspaces(),
+            &Config::default(),
+            |_| None,
+        );
+        assert_eq!(session.apps[0].windows[0].rect_abs, restore);
+        assert_eq!(session.apps[1].windows[0].rect_abs, Rect { x: 1728 + 480, y: 886 + 270, w: 960, h: 540 });
     }
 
     #[test]

@@ -47,6 +47,10 @@ pub struct ShimWindow {
     pub frame: Rect,
     pub maximized: Maximized,
     pub fullscreen: bool,
+    /// Geometry to unmaximize to, for maximized or fullscreen windows whose
+    /// unmaximized frame the shim has seen.
+    #[serde(default)]
+    pub restore_frame: Option<Rect>,
     pub minimized: bool,
     pub above: bool,
 }

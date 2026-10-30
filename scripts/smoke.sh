@@ -84,17 +84,15 @@ def load(name):
     rows = []
     for app in s["apps"]:
         for w in app["windows"]:
+            # For maximized windows this is the size they unmaximize to.
             r = w["rect_abs"]
-            rect = None if w["maximized"] != "none" else (r["x"], r["y"], r["w"], r["h"])
             rows.append(((app["id"], w["match"]["title"] if with_titles else None, w["workspace"], w["monitor_key"],
-                          w["maximized"], w["minimized"]), rect))
+                          w["maximized"], w["minimized"]), (r["x"], r["y"], r["w"], r["h"])))
     return sorted(rows, key=str)
 def same(b, a):
     # Position within 2 px (fractional scaling rounds). Size too, except after
     # restore: a relaunched app may have a slightly different minimum size
     # (gedit's depends on its title).
-    if b[1] is None or a[1] is None:
-        return b == a
     size_tolerance = 2 if with_titles else 8
     (x, y, w, h), (x2, y2, w2, h2) = b[1], a[1]
     return (b[0] == a[0] and abs(x - x2) <= 2 and abs(y - y2) <= 2

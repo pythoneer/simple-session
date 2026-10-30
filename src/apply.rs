@@ -244,6 +244,7 @@ mod tests {
             on_all_workspaces: false,
             monitor: 1,
             frame: Rect { x: 1800, y: 900, w: 100, h: 100 },
+            restore_frame: None,
             maximized: Maximized::None,
             fullscreen: false,
             minimized: false,

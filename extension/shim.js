@@ -23,7 +23,50 @@ function rect(r) {
     return {x: r.x, y: r.y, w: r.width, h: r.height};
 }
 
-function describeWindow(window) {
+// Mutter keeps the pre-maximize geometry private, so remember each window's
+// last frame while it was neither maximized nor fullscreen. In-memory only:
+// windows already maximized when the shim starts have no entry until they
+// are unmaximized once.
+class RestoreFrames {
+    constructor() {
+        this._frames = new Map();
+        global.display.list_all_windows().forEach(w => this._track(w));
+        global.display.connectObject('window-created', (_display, w) => this._track(w), this);
+    }
+
+    destroy() {
+        global.display.disconnectObject(this);
+        for (const window of this._frames.keys())
+            window.disconnectObject(this);
+        this._frames.clear();
+    }
+
+    get(window) {
+        return this._frames.get(window) ?? null;
+    }
+
+    _track(window) {
+        this._update(window);
+        window.connectObject(
+            'size-changed', () => this._update(window),
+            'position-changed', () => this._update(window),
+            'unmanaged', () => {
+                window.disconnectObject(this);
+                this._frames.delete(window);
+            }, this);
+    }
+
+    _update(window) {
+        if (Compat.getMaximized(window) !== 'none' || window.is_fullscreen())
+            return;
+        const frame = window.get_frame_rect();
+        if (frame.width > 0 && frame.height > 0)
+            this._frames.set(window, rect(frame));
+    }
+}
+
+function describeWindow(window, restoreFrames) {
+    const maximized = Compat.getMaximized(window);
     const app = Shell.WindowTracker.get_default().get_window_app(window);
     const workspace = window.get_workspace();
     return {
@@ -41,8 +84,11 @@ function describeWindow(window) {
         on_all_workspaces: window.is_on_all_workspaces(),
         monitor: window.get_monitor(),
         frame: rect(window.get_frame_rect()),
-        maximized: Compat.getMaximized(window),
+        maximized,
         fullscreen: window.is_fullscreen(),
+        // Geometry to unmaximize to; null when the frame already is that.
+        restore_frame: maximized !== 'none' || window.is_fullscreen()
+            ? restoreFrames.get(window) : null,
         minimized: window.minimized,
         above: window.is_above(),
     };
@@ -97,12 +143,14 @@ export class Shim {
         this._dbusImpl.export(Gio.DBus.session, OBJECT_PATH);
 
         this._pending = new Map();
+        this._restoreFrames = new RestoreFrames();
         global.display.connectObject('window-created',
             (_display, window) => this._onWindowCreated(window), this);
     }
 
     destroy() {
         global.display.disconnectObject(this);
+        this._restoreFrames.destroy();
         for (const [window, cleanup] of this._pending) {
             cleanup();
             this._pending.delete(window);
@@ -124,7 +172,7 @@ export class Shim {
                 window.disconnectObject(this);
                 this._emit('WindowClosed', String(window.get_id()));
             }, this);
-            this._emit('WindowReady', JSON.stringify(describeWindow(window)));
+            this._emit('WindowReady', JSON.stringify(describeWindow(window, this._restoreFrames)));
         };
 
         if (window.mapped) {
@@ -155,7 +203,7 @@ export class Shim {
         const windows = global.display.list_all_windows()
             .filter(isTracked)
             .sort((a, b) => a.get_stable_sequence() - b.get_stable_sequence())
-            .map(describeWindow);
+            .map(w => describeWindow(w, this._restoreFrames));
         return JSON.stringify(windows);
     }
 
