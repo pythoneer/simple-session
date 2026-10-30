@@ -1,0 +1,8 @@
+{
+  "uuid": "simple-session@dbensing.de",
+  "name": "Simple Session Shim",
+  "description": "Thin D-Bus shim that lets the simple-session CLI list, place and launch windows. No UI, no state.",
+  "shell-version": ["51"],
+  "url": "https://dbensing.de",
+  "version": 1
+}

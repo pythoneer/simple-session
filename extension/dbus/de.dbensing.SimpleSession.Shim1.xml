@@ -1,0 +1,57 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  de.dbensing.SimpleSession.Shim1
+
+  Exported by the simple-session shim extension on the gnome-shell
+  connection: bus name org.gnome.Shell, path /de/dbensing/SimpleSession/Shim.
+  Complex values are JSON strings so fields can be added without changing
+  the interface. Breaking changes get a new interface (Shim2).
+-->
+<node>
+  <interface name="de.dbensing.SimpleSession.Shim1">
+    <method name="GetVersion">
+      <arg type="u" direction="out" name="api"/>
+      <arg type="s" direction="out" name="shell_version"/>
+    </method>
+    <method name="ListWindows">
+      <arg type="s" direction="out" name="windows_json"/>
+    </method>
+    <method name="ListMonitors">
+      <arg type="s" direction="out" name="monitors_json"/>
+    </method>
+    <method name="GetWorkspaces">
+      <arg type="s" direction="out" name="workspaces_json"/>
+    </method>
+    <method name="EnsureWorkspaces">
+      <arg type="i" direction="in" name="count"/>
+      <arg type="i" direction="out" name="n_workspaces"/>
+    </method>
+    <method name="PlaceWindow">
+      <arg type="s" direction="in" name="id"/>
+      <arg type="s" direction="in" name="placement_json"/>
+      <arg type="b" direction="out" name="ok"/>
+    </method>
+    <method name="SetWindowState">
+      <arg type="s" direction="in" name="id"/>
+      <arg type="s" direction="in" name="state_json"/>
+      <arg type="b" direction="out" name="ok"/>
+    </method>
+    <method name="LaunchApp">
+      <arg type="s" direction="in" name="desktop_id"/>
+      <arg type="i" direction="in" name="workspace"/>
+      <arg type="b" direction="out" name="ok"/>
+    </method>
+    <method name="LaunchCommand">
+      <arg type="as" direction="in" name="argv"/>
+      <arg type="i" direction="in" name="workspace"/>
+      <arg type="b" direction="out" name="ok"/>
+    </method>
+    <signal name="WindowReady">
+      <arg type="s" name="window_json"/>
+    </signal>
+    <signal name="WindowClosed">
+      <arg type="s" name="id"/>
+    </signal>
+  </interface>
+</node>
