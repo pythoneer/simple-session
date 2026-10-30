@@ -9,6 +9,7 @@
 #   scripts/nested.sh restart [WxH ...]
 #   scripts/nested.sh env               print exports for the nested session
 #   scripts/nested.sh exec <cmd...>     run a command inside the nested session
+#   scripts/nested.sh eval <js>         evaluate JS in the nested shell (Shell.Eval)
 #
 # Example:
 #   scripts/nested.sh start
@@ -27,6 +28,9 @@ load_env() {
     running || { echo "nested session not running" >&2; exit 1; }
     export DBUS_SESSION_BUS_ADDRESS
     DBUS_SESSION_BUS_ADDRESS=$(cat "$STATE_DIR/bus")
+    # Same session store as the top-bar menu in the nested shell, unless the
+    # caller chose one (smoke tests use a temporary directory).
+    export SIMPLE_SESSION_DIR=${SIMPLE_SESSION_DIR:-$STATE_DIR/sessions}
     # Display name is chosen by mutter (passing --wayland-display fails in
     # devkit mode), so read it from the log.
     WAYLAND_DISPLAY=$(sed -n "s/.*Using Wayland display name '\([^']*\)'.*/\1/p" "$STATE_DIR/log" | tail -1)
@@ -52,6 +56,11 @@ start() {
     [[ ${#monitors[@]} -eq 0 ]] && monitors=(1920x1080)
     for m in "${monitors[@]}"; do args+=(--virtual-monitor "$m"); done
 
+    # The menu runs the CLI from the repo and keeps sessions apart from the
+    # real ones; unsafe mode lets tests drive the menu via Shell.Eval.
+    SIMPLE_SESSION_CLI=$(cd "$(dirname "$0")/.." && pwd)/target/release/simple-session \
+    SIMPLE_SESSION_DIR=$STATE_DIR/sessions \
+    SIMPLE_SESSION_NESTED_UNSAFE=1 \
     setsid dbus-run-session -- bash -c '
         state=$1; shift
         echo "$DBUS_SESSION_BUS_ADDRESS" > "$state/bus"
@@ -106,5 +115,10 @@ case $cmd in
         done
         ;;
     exec) load_env; exec "$@" ;;
-    *) sed -n '2,16p' "$0"; exit 1 ;;
+    eval)
+        load_env
+        gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+            --method org.gnome.Shell.Eval "$1"
+        ;;
+    *) sed -n '2,17p' "$0"; exit 1 ;;
 esac

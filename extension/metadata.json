@@ -1,8 +1,10 @@
 {
   "uuid": "simple-session@dbensing.de",
-  "name": "Simple Session Shim",
-  "description": "Thin D-Bus shim that lets the simple-session CLI list, place and launch windows. No UI, no state.",
-  "shell-version": ["51"],
+  "name": "Simple Session",
+  "description": "Save the open windows (app, monitor, workspace, position, state) as named sessions and restore them from a top-bar menu. Needs the simple-session command-line tool.",
+  "shell-version": [
+    "51"
+  ],
   "url": "https://dbensing.de",
   "version": 1
 }

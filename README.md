@@ -4,7 +4,7 @@ Save the open application windows on GNOME (Wayland) as named sessions: which ap
 
 Two parts:
 
-- **`extension/`**: a thin GNOME Shell extension (`simple-session@dbensing.de`). On Wayland, only the compositor can see and move other apps' windows, so this shim exposes a small D-Bus API (`de.dbensing.SimpleSession.Shim1`). It holds no logic, UI or state.
+- **`extension/`**: a GNOME Shell extension (`simple-session@dbensing.de`). On Wayland, only the compositor can see and move other apps' windows, so it exposes a small D-Bus API (`de.dbensing.SimpleSession.Shim1`) and holds no session logic. It also adds the top-bar menu.
 - **the `simple-session` CLI** (Rust): everything else. It handles capture, storage, monitor identity and, later, launching and placing windows.
 
 ## Install
@@ -18,6 +18,12 @@ GNOME on Wayland loads a newly installed extension only after you log out and ba
 ```sh
 simple-session doctor # checks the extension, monitors and storage
 ```
+
+## Top-bar menu
+
+The extension adds an icon to the top bar (right side). Its menu has a field to save the current windows under a name, and a submenu per saved session: **Restore**, **Apply to open windows**, **Overwrite with current windows**, **Delete**. Each action runs the CLI and shows its result as a notification.
+
+The menu finds the CLI in `PATH`, `~/.cargo/bin` or `~/.local/bin` (override with `SIMPLE_SESSION_CLI` in the shell's environment). If the menu fails to load after a GNOME update, the D-Bus part keeps working, and so does the CLI.
 
 ## Usage
 
@@ -65,6 +71,7 @@ make link-extension              # symlink extension/ into the shell's extension
 scripts/nested.sh start          # nested GNOME Shell (needs mutter-devkit)
 scripts/nested.sh exec scripts/shim.sh windows
 scripts/nested.sh exec cargo run -- doctor
+scripts/nested.sh eval 'Main.panel.statusArea["simple-session@dbensing.de"].menu.open()' 
 scripts/nested.sh restart        # reloads extension code in about 1 s
 scripts/smoke.sh apply|restore   # end-to-end in a nested shell: arrange, save, scramble or close, apply or restore, compare
 ```

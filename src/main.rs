@@ -40,7 +40,11 @@ enum Command {
         force: bool,
     },
     /// List saved sessions.
-    List,
+    List {
+        /// Machine-readable output (used by the top-bar menu).
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the windows of a saved session.
     Show {
         name: String,
@@ -86,7 +90,7 @@ async fn main() -> Result<()> {
     let config = Config::load_default()?;
     match cli.command {
         Command::Save { name, force } => save(&store, &config, name, force).await,
-        Command::List => list(&store),
+        Command::List { json } => list(&store, json),
         Command::Show { name, json } => show(&store, &name, json),
         Command::Apply { name, dry_run } => apply(&store, &config, &name, dry_run).await,
         Command::Restore { name, dry_run, timeout } => {
@@ -116,16 +120,11 @@ async fn save(store: &Store, config: &Config, name: String, force: bool) -> Resu
     let session = capture_current(config, name).await?;
     let path = store.save(&session, force)?;
 
-    println!(
-        "saved '{}': {} windows from {} apps -> {}",
-        session.name,
-        session.window_count(),
-        session.apps.len(),
-        path.display()
-    );
     for app in session.apps.iter().filter(|a| a.launch == Launch::None) {
-        println!("  note: {} cannot be relaunched (no desktop file or command line)", app.id);
+        println!("note: {} cannot be relaunched (no desktop file or command line)", app.id);
     }
+    println!("{}", path.display());
+    println!("saved '{}': {} windows from {} apps", session.name, session.window_count(), session.apps.len());
     Ok(())
 }
 
@@ -333,8 +332,12 @@ fn finish_placement(session: &Session, plan: &apply::Plan, dry_run: bool) -> Res
             plan.unmatched_slots.len()
         );
     } else {
+        if plan.windows.iter().any(|p| p.done_in_pass.is_some_and(|pass| pass > 1)) {
+            println!("(ok* = placed after a retry)");
+        }
+        // Last line doubles as the summary the top-bar menu shows.
         println!(
-            "{} placed, {} failed, {} saved windows not open (ok* = needed a retry)",
+            "{} placed, {} failed, {} saved windows not open",
             plan.windows.len() - failed,
             failed,
             plan.unmatched_slots.len()
@@ -354,8 +357,24 @@ fn geometry(r: Rect) -> String {
     format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y)
 }
 
-fn list(store: &Store) -> Result<()> {
+fn list(store: &Store, json: bool) -> Result<()> {
     let sessions = store.list()?;
+    if json {
+        let entries: Vec<_> = sessions
+            .iter()
+            .map(|(name, session)| match session {
+                Ok(s) => serde_json::json!({
+                    "name": name,
+                    "created": s.created,
+                    "windows": s.window_count(),
+                    "apps": s.apps.len(),
+                }),
+                Err(e) => serde_json::json!({ "name": name, "error": format!("{e:#}") }),
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&entries)?);
+        return Ok(());
+    }
     if sessions.is_empty() {
         println!("no sessions saved yet (in {})", store.dir().display());
         return Ok(());
