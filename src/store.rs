@@ -99,6 +99,18 @@ impl Store {
         Ok(sessions)
     }
 
+    /// Renames a session; refuses to overwrite an existing one.
+    pub fn rename(&self, old: &str, new: &str) -> Result<()> {
+        let old_path = self.path(old)?;
+        if self.exists(new)? {
+            bail!("session '{new}' already exists");
+        }
+        let mut session = self.load(old)?;
+        session.name = new.to_owned();
+        self.save(&session, false)?;
+        fs::remove_file(&old_path).with_context(|| format!("cannot remove {}", old_path.display()))
+    }
+
     pub fn delete(&self, name: &str) -> Result<()> {
         let path = self.path(name)?;
         if !path.exists() {
@@ -208,6 +220,22 @@ mod tests {
         assert_eq!(count("work.2."), 1);
         assert_eq!(count("work-old."), 1);
         assert_eq!(count("work.") - count("work.2."), KEEP_BACKUPS);
+    }
+
+    #[test]
+    fn rename_keeps_content_and_refuses_to_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::at(tmp.path());
+        store.save(&session("work"), false).unwrap();
+        store.save(&session("home"), false).unwrap();
+
+        assert!(store.rename("work", "home").unwrap_err().to_string().contains("already exists"));
+        assert!(store.rename("nope", "x").is_err());
+        assert!(store.rename("work", "../x").is_err());
+
+        store.rename("work", "office").unwrap();
+        assert!(!store.exists("work").unwrap());
+        assert_eq!(store.load("office").unwrap().name, "office");
     }
 
     #[test]

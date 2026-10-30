@@ -1,6 +1,7 @@
 mod apply;
 mod capture;
 mod config;
+mod diff;
 mod display;
 mod layout;
 mod matching;
@@ -64,6 +65,14 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         timeout: u64,
     },
+    /// Show how a session differs from the current desktop or another session.
+    Diff {
+        name: String,
+        /// Compare with this session instead of the current desktop.
+        other: Option<String>,
+    },
+    /// Rename a saved session.
+    Rename { old: String, new: String },
     /// Delete a saved session (a copy is kept in backups/).
     Delete { name: String },
     /// Check the shim extension, monitors and session storage.
@@ -83,6 +92,12 @@ async fn main() -> Result<()> {
         Command::Restore { name, dry_run, timeout } => {
             restore(&store, &config, &name, dry_run, Duration::from_secs(timeout)).await
         }
+        Command::Diff { name, other } => diff(&store, &config, &name, other.as_deref()).await,
+        Command::Rename { old, new } => {
+            store.rename(&old, &new)?;
+            println!("renamed '{old}' to '{new}'");
+            Ok(())
+        }
         Command::Delete { name } => {
             store.delete(&name)?;
             println!("deleted '{name}'");
@@ -98,18 +113,7 @@ async fn save(store: &Store, config: &Config, name: String, force: bool) -> Resu
         anyhow::bail!("session '{name}' already exists (use --force to overwrite)");
     }
 
-    let conn = Connection::session().await.context("cannot connect to the session bus")?;
-    let shim = Shim::connect(&conn).await?;
-    let (windows, workspaces) = tokio::try_join!(shim.windows(), shim.workspaces())?;
-    let monitors = current_monitors(&conn, &shim).await?;
-
-    let meta = capture::Meta {
-        name,
-        created: jiff::Timestamp::now().round(jiff::Unit::Second)?.to_string(),
-        host: hostname(),
-        shell_version: shim.shell_version.clone(),
-    };
-    let session = capture::build_session(meta, windows, monitors, &workspaces, config, capture::proc_cmdline);
+    let session = capture_current(config, name).await?;
     let path = store.save(&session, force)?;
 
     println!(
@@ -122,6 +126,62 @@ async fn save(store: &Store, config: &Config, name: String, force: bool) -> Resu
     for app in session.apps.iter().filter(|a| a.launch == Launch::None) {
         println!("  note: {} cannot be relaunched (no desktop file or command line)", app.id);
     }
+    Ok(())
+}
+
+/// The current desktop as a session.
+async fn capture_current(config: &Config, name: String) -> Result<Session> {
+    let conn = Connection::session().await.context("cannot connect to the session bus")?;
+    let shim = Shim::connect(&conn).await?;
+    let (windows, workspaces) = tokio::try_join!(shim.windows(), shim.workspaces())?;
+    let monitors = current_monitors(&conn, &shim).await?;
+
+    let meta = capture::Meta {
+        name,
+        created: jiff::Timestamp::now().round(jiff::Unit::Second)?.to_string(),
+        host: hostname(),
+        shell_version: shim.shell_version.clone(),
+    };
+    Ok(capture::build_session(meta, windows, monitors, &workspaces, config, capture::proc_cmdline))
+}
+
+async fn diff(store: &Store, config: &Config, name: &str, other: Option<&str>) -> Result<()> {
+    let mut old = store.load(name)?;
+    config.apply_to(&mut old);
+    let (new, label) = match other {
+        Some(other) => (store.load(other)?, format!("'{other}'")),
+        None => (capture_current(config, "current".to_owned()).await?, "the current desktop".to_owned()),
+    };
+
+    let result = diff::diff(&old, &new);
+    let line = |session: &Session, (a, s): matching::SlotRef| {
+        let title = session.apps[a].windows[s].matcher.title.as_deref().unwrap_or("");
+        format!("{:32} {}", truncate(&session.apps[a].id, 32), truncate(title, 44))
+    };
+    let (mut removed, mut added) = (0, 0);
+    for change in &result.changes {
+        match change {
+            diff::Change::Changed { old: r, details, .. } => {
+                println!("~ {}", line(&old, *r));
+                for detail in details {
+                    println!("      {detail}");
+                }
+            }
+            diff::Change::Removed(r) => {
+                removed += 1;
+                println!("- {}", line(&old, *r));
+            }
+            diff::Change::Added(r) => {
+                added += 1;
+                println!("+ {}", line(&new, *r));
+            }
+        }
+    }
+    println!(
+        "'{name}' vs {label}: {} unchanged, {} changed, {removed} only in '{name}' (-), {added} only in {label} (+)",
+        result.unchanged,
+        result.changes.len() - removed - added,
+    );
     Ok(())
 }
 

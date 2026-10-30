@@ -30,6 +30,9 @@ simple-session apply work         # move open windows back to where "work" has t
 simple-session apply work -n      # dry run: only print the plan
 simple-session restore work       # launch what is not open, then place everything
 simple-session restore work -n    # dry run
+simple-session diff work          # what changed since "work" was saved
+simple-session diff work home     # compare two sessions
+simple-session rename work office
 simple-session delete work        # a copy is kept in backups/
 ```
 
