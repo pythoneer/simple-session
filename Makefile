@@ -27,3 +27,16 @@ zip:
 
 logs:
 	journalctl --user -b -f -o cat /usr/bin/gnome-shell
+
+.PHONY: build test install-cli install
+
+build:
+	cargo build --release
+
+test:
+	cargo test
+
+install-cli:
+	cargo install --path . --locked
+
+install: install-extension install-cli

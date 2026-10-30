@@ -1,0 +1,17 @@
+[package]
+name = "simple-session"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+directories = "6.0.0"
+jiff = "0.2.38"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt", "macros", "time"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
