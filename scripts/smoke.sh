@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# End-to-end check of save + apply in a nested shell:
-# arrange known windows, save, scramble, apply, save again, compare.
+# End-to-end check in a nested shell: arrange known windows, save, then
+#   apply:   scramble the windows and run `apply`
+#   restore: close all apps and run `restore`
+# and finally save again and compare with the first save.
 #
-#   scripts/smoke-apply.sh            (uses target/release/simple-session)
+#   scripts/smoke.sh [apply|restore]   (uses target/release/simple-session)
 set -euo pipefail
+
+MODE=${1:-apply}
+[[ $MODE == apply || $MODE == restore ]] || { echo "usage: $0 [apply|restore]" >&2; exit 2; }
 
 cd "$(dirname "$0")/.."
 BIN=${BIN:-$PWD/target/release/simple-session}
@@ -15,9 +20,10 @@ trap 'rm -rf "$SIMPLE_SESSION_DIR"; $NESTED stop' EXIT
 
 $NESTED restart 1920x1080 1280x1024 >/dev/null
 
-$NESTED exec bash -s "$BIN" <<'EOF'
+$NESTED exec bash -s "$BIN" "$MODE" <<'EOF'
 set -euo pipefail
 BIN=$1
+MODE=$2
 for cmd in "alacritty -T one" "alacritty -T two" "alacritty -T three" gedit xterm gnome-calculator; do
     $cmd >/dev/null 2>&1 &
 done
@@ -49,18 +55,30 @@ sleep 0.5
 
 "$BIN" save before >/dev/null
 
-# Scramble: everything onto workspace 0 and the primary monitor, unmaximized, visible.
-for id in "${W[@]}"; do
-    place "$id" "{\"workspace\":0,\"monitor\":0,\"rect\":{\"x\":$((RANDOM % 600)),\"y\":$((RANDOM % 300 + 40)),\"w\":400,\"h\":300}}"
-done
-sleep 0.5
-
-echo "--- apply"
-"$BIN" apply before
+if [[ $MODE == apply ]]; then
+    # Scramble: everything onto workspace 0 and the primary monitor, unmaximized, visible.
+    for id in "${W[@]}"; do
+        place "$id" "{\"workspace\":0,\"monitor\":0,\"rect\":{\"x\":$((RANDOM % 600)),\"y\":$((RANDOM % 300 + 40)),\"w\":400,\"h\":300}}"
+    done
+    sleep 0.5
+    echo "--- apply"
+    "$BIN" apply before
+else
+    kill $(jobs -p)
+    for _ in $(seq 50); do
+        [[ $(scripts/shim.sh windows) == "[]" ]] && break
+        sleep 0.1
+    done
+    echo "--- restore"
+    "$BIN" restore before
+fi
 "$BIN" save after >/dev/null
 
-python3 - "$SIMPLE_SESSION_DIR" <<'PY'
+python3 - "$SIMPLE_SESSION_DIR" "$MODE" <<'PY'
 import json, sys
+# Relaunched apps do not get their old titles back (alacritty -T), so only
+# apply compares titles.
+with_titles = sys.argv[2] == "apply"
 def load(name):
     s = json.load(open(f"{sys.argv[1]}/{name}.json"))
     rows = []
@@ -68,14 +86,19 @@ def load(name):
         for w in app["windows"]:
             r = w["rect_abs"]
             rect = None if w["maximized"] != "none" else (r["x"], r["y"], r["w"], r["h"])
-            rows.append(((app["id"], w["match"]["title"], w["workspace"], w["monitor_key"],
+            rows.append(((app["id"], w["match"]["title"] if with_titles else None, w["workspace"], w["monitor_key"],
                           w["maximized"], w["minimized"]), rect))
     return sorted(rows, key=str)
 def same(b, a):
-    # Geometry within 2 px (fractional scaling rounds).
+    # Position within 2 px (fractional scaling rounds). Size too, except after
+    # restore: a relaunched app may have a slightly different minimum size
+    # (gedit's depends on its title).
     if b[1] is None or a[1] is None:
         return b == a
-    return b[0] == a[0] and all(abs(p - q) <= 2 for p, q in zip(b[1], a[1]))
+    size_tolerance = 2 if with_titles else 8
+    (x, y, w, h), (x2, y2, w2, h2) = b[1], a[1]
+    return (b[0] == a[0] and abs(x - x2) <= 2 and abs(y - y2) <= 2
+            and abs(w - w2) <= size_tolerance and abs(h - h2) <= size_tolerance)
 before, after = load("before"), load("after")
 bad = [(b, a) for b, a in zip(before, after) if not same(b, a)]
 for b, a in bad:

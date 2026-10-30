@@ -63,7 +63,7 @@ scripts/nested.sh start          # nested GNOME Shell (needs mutter-devkit)
 scripts/nested.sh exec scripts/shim.sh windows
 scripts/nested.sh exec cargo run -- doctor
 scripts/nested.sh restart        # reloads extension code in about 1 s
-scripts/smoke-apply.sh           # end-to-end: arrange, save, scramble, apply, compare
+scripts/smoke.sh apply|restore   # end-to-end in a nested shell: arrange, save, scramble or close, apply or restore, compare
 ```
 
 Extension code is only reloaded when the shell starts. Use the nested shell instead of logging out after each change.
