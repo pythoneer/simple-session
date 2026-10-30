@@ -2,6 +2,9 @@
 name = "simple-session"
 version = "0.1.0"
 edition = "2024"
+description = "Save and restore GNOME window sessions"
+license = "MIT"
+repository = "https://github.com/pythoneer/simple-session"
 
 [dependencies]
 anyhow = "1.0.104"
