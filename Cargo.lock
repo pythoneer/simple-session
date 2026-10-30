@@ -584,6 +584,7 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "tokio",
  "zbus",

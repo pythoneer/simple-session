@@ -1,7 +1,7 @@
 //! Client for the shim extension (`de.dbensing.SimpleSession.Shim1`).
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zbus::{Connection, proxy};
 
 use crate::model::{Maximized, Rect};
@@ -19,10 +19,11 @@ trait Shim1 {
     fn list_windows(&self) -> zbus::Result<String>;
     fn list_monitors(&self) -> zbus::Result<String>;
     fn get_workspaces(&self) -> zbus::Result<String>;
+    fn place_window(&self, id: &str, placement_json: &str) -> zbus::Result<bool>;
+    fn set_window_state(&self, id: &str, state_json: &str) -> zbus::Result<bool>;
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // id and client are needed once windows are placed
 pub struct ShimWindow {
     pub id: String,
     pub stable_seq: u32,
@@ -33,6 +34,7 @@ pub struct ShimWindow {
     pub sandboxed_app_id: Option<String>,
     pub title: Option<String>,
     pub pid: i32,
+    #[allow(dead_code)] // reported by the shim; useful when debugging placement
     pub client: String,
     pub workspace: i32,
     pub on_all_workspaces: bool,
@@ -62,6 +64,23 @@ pub struct ShimWorkspaces {
     pub active: i32,
     pub dynamic: bool,
     pub only_on_primary: bool,
+}
+
+/// Argument of `PlaceWindow`; absent fields are left unchanged by the shim.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Placement {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_all_workspaces: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rect: Option<Rect>,
+    pub maximized: Maximized,
+    pub fullscreen: bool,
+    pub minimized: bool,
+    pub above: bool,
 }
 
 pub struct Shim {
@@ -95,5 +114,23 @@ impl Shim {
 
     pub async fn workspaces(&self) -> Result<ShimWorkspaces> {
         Ok(serde_json::from_str(&self.proxy.get_workspaces().await?)?)
+    }
+
+    pub async fn place_window(&self, id: &str, placement: &Placement) -> Result<()> {
+        self.proxy.place_window(id, &serde_json::to_string(placement)?).await?;
+        Ok(())
+    }
+
+    /// Sets only maximized/fullscreen/minimized/above (the shim changes only
+    /// states that differ).
+    pub async fn set_window_state(&self, id: &str, placement: &Placement) -> Result<()> {
+        let state = serde_json::json!({
+            "maximized": placement.maximized,
+            "fullscreen": placement.fullscreen,
+            "minimized": placement.minimized,
+            "above": placement.above,
+        });
+        self.proxy.set_window_state(id, &state.to_string()).await?;
+        Ok(())
     }
 }

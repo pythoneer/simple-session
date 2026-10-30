@@ -26,12 +26,16 @@ simple-session save work          # save the current windows as "work"
 simple-session save work --force  # overwrite (the previous version goes to backups/)
 simple-session list
 simple-session show work          # table view; --json prints the file
+simple-session apply work         # move open windows back to where "work" has them
+simple-session apply work -n      # dry run: only print the plan
 simple-session delete work        # a copy is kept in backups/
 ```
 
+`apply` only moves windows that are already open; it launches nothing. Open windows are matched to saved ones by app, then by title, then by order. If the monitors changed, each saved monitor is mapped to a current one (same monitor → same connector → same size → primary) and the window rectangles are scaled to fit.
+
 Sessions are stored in `~/.local/share/simple-session/sessions/` (override with `SIMPLE_SESSION_DIR`).
 
-Restoring (`apply` for windows that are already open, `restore` to relaunch apps) is in progress.
+Relaunching apps that are not open (`restore`) is in progress.
 
 ## Development
 
@@ -42,6 +46,7 @@ scripts/nested.sh start          # nested GNOME Shell (needs mutter-devkit)
 scripts/nested.sh exec scripts/shim.sh windows
 scripts/nested.sh exec cargo run -- doctor
 scripts/nested.sh restart        # reloads extension code in about 1 s
+scripts/smoke-apply.sh           # end-to-end: arrange, save, scramble, apply, compare
 ```
 
 Extension code is only reloaded when the shell starts. Use the nested shell instead of logging out after each change.

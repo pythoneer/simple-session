@@ -17,7 +17,8 @@ fn desktop_id(window: &ShimWindow) -> Option<&str> {
     window.app_id.as_deref().filter(|id| !id.starts_with("window:"))
 }
 
-fn app_key(window: &ShimWindow) -> String {
+/// Groups windows into apps; also used to match open windows to saved ones.
+pub fn app_key(window: &ShimWindow) -> String {
     desktop_id(window).or(window.wm_class.as_deref()).unwrap_or("unknown").to_owned()
 }
 

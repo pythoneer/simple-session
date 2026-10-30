@@ -1,5 +1,8 @@
+mod apply;
 mod capture;
 mod display;
+mod layout;
+mod matching;
 mod model;
 mod shim;
 mod store;
@@ -8,7 +11,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use zbus::Connection;
 
-use crate::model::{Launch, Maximized, Session, WindowSlot};
+use crate::layout::MapReason;
+use crate::model::{Launch, Maximized, Monitor, Rect, Session, WindowSlot};
 use crate::shim::Shim;
 use crate::store::Store;
 
@@ -38,6 +42,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Move already open windows to where a session has them (launches nothing).
+    Apply {
+        name: String,
+        /// Only print what would be moved.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
     /// Delete a saved session (a copy is kept in backups/).
     Delete { name: String },
     /// Check the shim extension, monitors and session storage.
@@ -52,6 +63,7 @@ async fn main() -> Result<()> {
         Command::Save { name, force } => save(&store, name, force).await,
         Command::List => list(&store),
         Command::Show { name, json } => show(&store, &name, json),
+        Command::Apply { name, dry_run } => apply(&store, &name, dry_run).await,
         Command::Delete { name } => {
             store.delete(&name)?;
             println!("deleted '{name}'");
@@ -69,12 +81,8 @@ async fn save(store: &Store, name: String, force: bool) -> Result<()> {
 
     let conn = Connection::session().await.context("cannot connect to the session bus")?;
     let shim = Shim::connect(&conn).await?;
-    let (windows, shim_monitors, workspaces) =
-        tokio::try_join!(shim.windows(), shim.monitors(), shim.workspaces())?;
-    let displays = display::current_displays(&conn).await.unwrap_or_else(|e| {
-        eprintln!("warning: no monitor identities from DisplayConfig ({e}); using monitor indices");
-        Vec::new()
-    });
+    let (windows, workspaces) = tokio::try_join!(shim.windows(), shim.workspaces())?;
+    let monitors = current_monitors(&conn, &shim).await?;
 
     let meta = capture::Meta {
         name,
@@ -82,7 +90,6 @@ async fn save(store: &Store, name: String, force: bool) -> Result<()> {
         host: hostname(),
         shell_version: shim.shell_version.clone(),
     };
-    let monitors = display::correlate(&shim_monitors, &displays);
     let session = capture::build_session(meta, windows, monitors, &workspaces, capture::proc_cmdline);
     let path = store.save(&session, force)?;
 
@@ -97,6 +104,102 @@ async fn save(store: &Store, name: String, force: bool) -> Result<()> {
         println!("  note: {} cannot be relaunched (no desktop file or command line)", app.id);
     }
     Ok(())
+}
+
+async fn current_monitors(conn: &Connection, shim: &Shim) -> Result<Vec<Monitor>> {
+    let displays = display::current_displays(conn).await.unwrap_or_else(|e| {
+        eprintln!("warning: no monitor identities from DisplayConfig ({e}); using monitor indices");
+        Vec::new()
+    });
+    Ok(display::correlate(&shim.monitors().await?, &displays))
+}
+
+async fn apply(store: &Store, name: &str, dry_run: bool) -> Result<()> {
+    let session = store.load(name)?;
+    let conn = Connection::session().await.context("cannot connect to the session bus")?;
+    let shim = Shim::connect(&conn).await?;
+    let (windows, workspaces) = tokio::try_join!(shim.windows(), shim.workspaces())?;
+    let monitors = current_monitors(&conn, &shim).await?;
+    let mut plan = apply::plan(&session, windows, monitors, workspaces.dynamic);
+
+    for (saved, &(index, reason)) in session.monitors.iter().zip(&plan.monitor_targets) {
+        if reason != MapReason::Exact {
+            let current = &plan.current_monitors[index];
+            println!("monitor {} -> {} ({reason})", monitor_name(saved), monitor_name(current));
+        }
+    }
+
+    if !dry_run {
+        apply::execute(&shim, &mut plan).await?;
+    }
+
+    for p in &plan.windows {
+        let (a, s) = p.slot;
+        let slot = &session.apps[a].windows[s];
+        let status = match (dry_run, p.done_in_pass) {
+            (true, _) => "plan",
+            (false, Some(1)) => "ok",
+            (false, Some(_)) => "ok*",
+            (false, None) => "FAIL",
+        };
+        let workspace = match (p.placement.workspace, p.placement.on_all_workspaces) {
+            (Some(ws), _) => ws.to_string(),
+            (None, Some(true)) => "all".to_owned(),
+            (None, _) => "-".to_owned(),
+        };
+        println!(
+            "{status:4}  {:32} ws {:>3}  {:6} {:20} {}",
+            truncate(&session.apps[a].id, 32),
+            workspace,
+            monitor_name(&plan.current_monitors[p.monitor]),
+            p.placement.rect.map(geometry).unwrap_or_default(),
+            state_label(slot)
+        );
+        if !dry_run && p.done_in_pass.is_none() {
+            match &p.last_seen {
+                Some(w) => println!(
+                    "      is at ws {}  {}  maximized={:?} minimized={}",
+                    w.workspace,
+                    geometry(w.frame),
+                    w.maximized,
+                    w.minimized
+                ),
+                None => println!("      window is gone"),
+            }
+        }
+    }
+    for &(a, s) in &plan.unmatched_slots {
+        let title = session.apps[a].windows[s].matcher.title.as_deref().unwrap_or("");
+        println!("open? {:32} {}", truncate(&session.apps[a].id, 32), truncate(title, 44));
+    }
+
+    let failed = plan.windows.iter().filter(|p| p.done_in_pass.is_none()).count();
+    if dry_run {
+        println!(
+            "{} windows would be placed, {} saved windows are not open",
+            plan.windows.len(),
+            plan.unmatched_slots.len()
+        );
+    } else {
+        println!(
+            "{} placed, {} failed, {} saved windows not open (ok* = needed a retry)",
+            plan.windows.len() - failed,
+            failed,
+            plan.unmatched_slots.len()
+        );
+        if failed > 0 {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+fn monitor_name(m: &Monitor) -> String {
+    if m.connector.is_empty() { m.key.clone() } else { m.connector.clone() }
+}
+
+fn geometry(r: Rect) -> String {
+    format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y)
 }
 
 fn list(store: &Store) -> Result<()> {
@@ -162,7 +265,7 @@ fn show(store: &Store, name: &str, json: bool) -> Result<()> {
             truncate(&app.id, 32),
             if w.on_all_workspaces { "all".to_owned() } else { w.workspace.to_string() },
             monitor_label(&session, w),
-            format!("{}x{}+{}+{}", w.rect_abs.w, w.rect_abs.h, w.rect_abs.x, w.rect_abs.y),
+            geometry(w.rect_abs),
             state_label(w),
             match &app.launch {
                 Launch::Desktop { .. } => "desktop",
