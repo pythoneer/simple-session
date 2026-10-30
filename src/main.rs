@@ -1,16 +1,21 @@
 mod apply;
 mod capture;
+mod config;
 mod display;
 mod layout;
 mod matching;
 mod model;
+mod restore;
 mod shim;
 mod store;
+
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use zbus::Connection;
 
+use crate::config::Config;
 use crate::layout::MapReason;
 use crate::model::{Launch, Maximized, Monitor, Rect, Session, WindowSlot};
 use crate::shim::Shim;
@@ -49,6 +54,16 @@ enum Command {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+    /// Launch the apps of a session that are not open and place all windows.
+    Restore {
+        name: String,
+        /// Only print what would be launched and moved.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        /// Seconds to wait for launched apps to show their windows.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
     /// Delete a saved session (a copy is kept in backups/).
     Delete { name: String },
     /// Check the shim extension, monitors and session storage.
@@ -59,11 +74,15 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::open_default()?;
+    let config = Config::load_default()?;
     match cli.command {
-        Command::Save { name, force } => save(&store, name, force).await,
+        Command::Save { name, force } => save(&store, &config, name, force).await,
         Command::List => list(&store),
         Command::Show { name, json } => show(&store, &name, json),
-        Command::Apply { name, dry_run } => apply(&store, &name, dry_run).await,
+        Command::Apply { name, dry_run } => apply(&store, &config, &name, dry_run).await,
+        Command::Restore { name, dry_run, timeout } => {
+            restore(&store, &config, &name, dry_run, Duration::from_secs(timeout)).await
+        }
         Command::Delete { name } => {
             store.delete(&name)?;
             println!("deleted '{name}'");
@@ -73,7 +92,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn save(store: &Store, name: String, force: bool) -> Result<()> {
+async fn save(store: &Store, config: &Config, name: String, force: bool) -> Result<()> {
     // Fail before talking to the shell if the save would be refused anyway.
     if store.exists(&name)? && !force {
         anyhow::bail!("session '{name}' already exists (use --force to overwrite)");
@@ -90,7 +109,7 @@ async fn save(store: &Store, name: String, force: bool) -> Result<()> {
         host: hostname(),
         shell_version: shim.shell_version.clone(),
     };
-    let session = capture::build_session(meta, windows, monitors, &workspaces, capture::proc_cmdline);
+    let session = capture::build_session(meta, windows, monitors, &workspaces, config, capture::proc_cmdline);
     let path = store.save(&session, force)?;
 
     println!(
@@ -114,25 +133,98 @@ async fn current_monitors(conn: &Connection, shim: &Shim) -> Result<Vec<Monitor>
     Ok(display::correlate(&shim.monitors().await?, &displays))
 }
 
-async fn apply(store: &Store, name: &str, dry_run: bool) -> Result<()> {
-    let session = store.load(name)?;
+async fn apply(store: &Store, config: &Config, name: &str, dry_run: bool) -> Result<()> {
+    let mut session = store.load(name)?;
+    config.apply_to(&mut session);
     let conn = Connection::session().await.context("cannot connect to the session bus")?;
     let shim = Shim::connect(&conn).await?;
     let (windows, workspaces) = tokio::try_join!(shim.windows(), shim.workspaces())?;
     let monitors = current_monitors(&conn, &shim).await?;
-    let mut plan = apply::plan(&session, windows, monitors, workspaces.dynamic);
 
+    let mut plan = apply::plan(&session, windows, monitors, workspaces.dynamic);
+    print_monitor_mapping(&session, &plan);
+    if !dry_run {
+        apply::execute(&shim, &mut plan).await?;
+    }
+    finish_placement(&session, &plan, dry_run)
+}
+
+async fn restore(store: &Store, config: &Config, name: &str, dry_run: bool, timeout: Duration) -> Result<()> {
+    let mut session = store.load(name)?;
+    config.apply_to(&mut session);
+    let conn = Connection::session().await.context("cannot connect to the session bus")?;
+    let shim = Shim::connect(&conn).await?;
+    let (windows, workspaces) = tokio::try_join!(shim.windows(), shim.workspaces())?;
+    let monitors = current_monitors(&conn, &shim).await?;
+
+    let launch_plan = restore::launch_plan(&session, &windows, workspaces.dynamic);
+    for &a in &launch_plan.already_running {
+        println!(
+            "skip  {:32} already running; it reopens its own windows, so it is not launched again",
+            truncate(&session.apps[a].id, 32)
+        );
+    }
+    for &a in &launch_plan.not_launchable {
+        println!(
+            "skip  {:32} cannot be launched (no desktop file or command)",
+            truncate(&session.apps[a].id, 32)
+        );
+    }
+
+    if dry_run {
+        for item in &launch_plan.launches {
+            println!(
+                "launch {:31} ws {:>3}",
+                truncate(&session.apps[item.app].id, 31),
+                workspace_hint(item.workspace)
+            );
+        }
+        let plan = apply::plan(&session, windows, monitors, workspaces.dynamic);
+        print_monitor_mapping(&session, &plan);
+        println!(
+            "{} launches; windows that are open now would be placed like this:",
+            launch_plan.launches.len()
+        );
+        return finish_placement(&session, &plan, true);
+    }
+
+    if !launch_plan.launches.is_empty() {
+        let outcome = restore::launch_and_wait(&shim, &session, &launch_plan, &windows, timeout).await?;
+        for (item, started) in launch_plan.launches.iter().zip(&outcome.started) {
+            println!(
+                "{} {:31} ws {:>3}",
+                if *started { "launch" } else { "FAIL  " },
+                truncate(&session.apps[item.app].id, 31),
+                workspace_hint(item.workspace)
+            );
+        }
+        if outcome.timed_out {
+            println!("timed out after {}s waiting for windows; placing what is there", timeout.as_secs());
+        }
+    }
+
+    let windows = shim.windows().await?;
+    let mut plan = apply::plan(&session, windows, monitors, workspaces.dynamic);
+    print_monitor_mapping(&session, &plan);
+    apply::execute(&shim, &mut plan).await?;
+    finish_placement(&session, &plan, false)
+}
+
+fn workspace_hint(ws: i32) -> String {
+    if ws < 0 { "-".to_owned() } else { ws.to_string() }
+}
+
+fn print_monitor_mapping(session: &Session, plan: &apply::Plan) {
     for (saved, &(index, reason)) in session.monitors.iter().zip(&plan.monitor_targets) {
         if reason != MapReason::Exact {
             let current = &plan.current_monitors[index];
             println!("monitor {} -> {} ({reason})", monitor_name(saved), monitor_name(current));
         }
     }
+}
 
-    if !dry_run {
-        apply::execute(&shim, &mut plan).await?;
-    }
-
+/// Prints the placement report; exits with status 1 if windows failed.
+fn finish_placement(session: &Session, plan: &apply::Plan, dry_run: bool) -> Result<()> {
     for p in &plan.windows {
         let (a, s) = p.slot;
         let slot = &session.apps[a].windows[s];

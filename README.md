@@ -28,14 +28,31 @@ simple-session list
 simple-session show work          # table view; --json prints the file
 simple-session apply work         # move open windows back to where "work" has them
 simple-session apply work -n      # dry run: only print the plan
+simple-session restore work       # launch what is not open, then place everything
+simple-session restore work -n    # dry run
 simple-session delete work        # a copy is kept in backups/
 ```
 
 `apply` only moves windows that are already open; it launches nothing. Open windows are matched to saved ones by app, then by title, then by order. If the monitors changed, each saved monitor is mapped to a current one (same monitor → same connector → same size → primary) and the window rectangles are scaled to fit.
 
+`restore` first launches the apps whose windows are missing (from their desktop file, or the command line they were started with), waits until their windows appear (`--timeout`, default 30 s), and then places all windows like `apply`. Apps that reopen their own windows (browsers, JetBrains IDEs, VS Code, Sublime, Zed) are launched once instead of once per window, and not at all if they are already running.
+
 Sessions are stored in `~/.local/share/simple-session/sessions/` (override with `SIMPLE_SESSION_DIR`).
 
-Relaunching apps that are not open (`restore`) is in progress.
+## Configuration
+
+Optional, in `~/.config/simple-session/config.toml` (override with `SIMPLE_SESSION_CONFIG`). Apps are keyed like in the session files (`simple-session show <name>` lists them). Rules also apply to sessions saved before the rule was added.
+
+```toml
+[apps."firefox.desktop"]
+launch_mode = "per_window"   # or "once"
+
+[apps."org.gnome.Settings.desktop"]
+ignore = true                # never saved, launched or placed
+
+[apps."com.mitchellh.ghostty"]
+argv = ["ghostty"]           # launch with this command instead
+```
 
 ## Development
 

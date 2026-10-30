@@ -21,6 +21,11 @@ trait Shim1 {
     fn get_workspaces(&self) -> zbus::Result<String>;
     fn place_window(&self, id: &str, placement_json: &str) -> zbus::Result<bool>;
     fn set_window_state(&self, id: &str, state_json: &str) -> zbus::Result<bool>;
+    fn launch_app(&self, desktop_id: &str, workspace: i32) -> zbus::Result<bool>;
+    fn launch_command(&self, argv: &[&str], workspace: i32) -> zbus::Result<bool>;
+
+    #[zbus(signal)]
+    fn window_ready(&self, window_json: String) -> zbus::Result<()>;
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,6 +119,29 @@ impl Shim {
 
     pub async fn workspaces(&self) -> Result<ShimWorkspaces> {
         Ok(serde_json::from_str(&self.proxy.get_workspaces().await?)?)
+    }
+
+    /// Launches a desktop app; `false` if the shell does not know the id.
+    /// `workspace` is a hint (-1 for none) that apps with startup
+    /// notification follow.
+    pub async fn launch_app(&self, desktop_id: &str, workspace: i32) -> Result<bool> {
+        Ok(self.proxy.launch_app(desktop_id, workspace).await?)
+    }
+
+    pub async fn launch_command(&self, argv: &[String], workspace: i32) -> Result<bool> {
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        Ok(self.proxy.launch_command(&argv, workspace).await?)
+    }
+
+    /// Windows as they get mapped. Subscribe before launching anything so no
+    /// window is missed.
+    pub async fn window_ready_stream(&self) -> Result<impl futures_util::Stream<Item = ShimWindow> + use<>> {
+        use futures_util::StreamExt;
+        let stream = self.proxy.receive_window_ready().await?;
+        Ok(stream.filter_map(|signal| async move {
+            let json = signal.args().ok()?.window_json;
+            serde_json::from_str(&json).ok()
+        }))
     }
 
     pub async fn place_window(&self, id: &str, placement: &Placement) -> Result<()> {

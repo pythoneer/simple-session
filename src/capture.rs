@@ -1,8 +1,7 @@
 //! Turns what the shim and DisplayConfig report into a [`Session`].
 
-use crate::model::{
-    App, Launch, LaunchMode, Monitor, RelRect, SCHEMA, Session, WindowMatch, WindowSlot, Workspaces,
-};
+use crate::config::Config;
+use crate::model::{App, Launch, Monitor, RelRect, SCHEMA, Session, WindowMatch, WindowSlot, Workspaces};
 use crate::shim::{ShimWindow, ShimWorkspaces};
 
 pub struct Meta {
@@ -28,6 +27,7 @@ pub fn build_session(
     mut windows: Vec<ShimWindow>,
     monitors: Vec<Monitor>,
     workspaces: &ShimWorkspaces,
+    config: &Config,
     cmdline: impl Fn(i32) -> Option<Vec<String>>,
 ) -> Session {
     // Ascending workspace order is also the order restore must place them in.
@@ -36,6 +36,9 @@ pub fn build_session(
     let mut apps: Vec<App> = Vec::new();
     for window in &windows {
         let key = app_key(window);
+        if config.ignored(&key) {
+            continue;
+        }
         let index = match apps.iter().position(|a| a.id == key) {
             Some(index) => index,
             None => {
@@ -45,7 +48,8 @@ pub fn build_session(
                         .filter(|argv| !argv.is_empty())
                         .map_or(Launch::None, |argv| Launch::Argv { argv }),
                 };
-                apps.push(App { id: key, launch, launch_mode: LaunchMode::default(), windows: Vec::new() });
+                let launch_mode = config.launch_mode(&key);
+                apps.push(App { id: key, launch, launch_mode, windows: Vec::new() });
                 apps.len() - 1
             }
         };
@@ -103,7 +107,7 @@ pub fn proc_cmdline(pid: i32) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Maximized, Rect};
+    use crate::model::{LaunchMode, Maximized, Rect};
 
     fn window(seq: u32, app_id: Option<&str>, wm_class: &str, workspace: i32, monitor: i32) -> ShimWindow {
         ShimWindow {
@@ -164,12 +168,14 @@ mod tests {
             window(1, Some("firefox.desktop"), "firefox", 0, 1),
             window(2, Some("org.gnome.Nautilus.desktop"), "org.gnome.Nautilus", -1, 0),
         ];
-        let session = build_session(meta(), windows, monitors(), &workspaces(), |_| None);
+        let session = build_session(meta(), windows, monitors(), &workspaces(), &Config::default(), |_| None);
 
         let ids: Vec<_> = session.apps.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, ["org.gnome.Nautilus.desktop", "firefox.desktop"]);
         let firefox = &session.apps[1];
         assert_eq!(firefox.launch, Launch::Desktop { desktop_id: "firefox.desktop".into() });
+        assert_eq!(firefox.launch_mode, LaunchMode::Once);
+        assert_eq!(session.apps[0].launch_mode, LaunchMode::PerWindow);
         let titles: Vec<_> = firefox.windows.iter().map(|w| w.matcher.title.as_deref().unwrap()).collect();
         assert_eq!(titles, ["title 1", "title 3"]);
         assert_eq!(firefox.windows[0].monitor_key, "right");
@@ -181,7 +187,7 @@ mod tests {
     fn windows_without_desktop_file_fall_back_to_argv() {
         let windows =
             vec![window(1, Some("window:7"), "sublime_merge", 0, 1), window(2, None, "mystery", 0, 1)];
-        let session = build_session(meta(), windows, monitors(), &workspaces(), |pid| {
+        let session = build_session(meta(), windows, monitors(), &workspaces(), &Config::default(), |pid| {
             (pid == 101).then(|| vec!["/opt/sublime_merge/sublime_merge".into()])
         });
 
@@ -194,9 +200,24 @@ mod tests {
     }
 
     #[test]
+    fn ignored_apps_are_not_captured() {
+        let config: Config = toml::from_str("[apps.\"b.desktop\"]\nignore = true").unwrap();
+        let windows = vec![window(1, Some("a.desktop"), "a", 0, 1), window(2, Some("b.desktop"), "b", 0, 1)];
+        let session = build_session(meta(), windows, monitors(), &workspaces(), &config, |_| None);
+        let ids: Vec<_> = session.apps.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["a.desktop"]);
+    }
+
+    #[test]
     fn unknown_monitor_index_is_kept_as_index_key() {
-        let session =
-            build_session(meta(), vec![window(1, None, "x", 0, 5)], monitors(), &workspaces(), |_| None);
+        let session = build_session(
+            meta(),
+            vec![window(1, None, "x", 0, 5)],
+            monitors(),
+            &workspaces(),
+            &Config::default(),
+            |_| None,
+        );
         assert_eq!(session.apps[0].windows[0].monitor_key, "index:5");
     }
 }
